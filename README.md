@@ -12,7 +12,6 @@ I'm **Harika Sasapu**, a passionate technologist and Cornell University graduate
 - 💡 Outside the professional sphere, I’m:
   - 🕺 A **Zumba Certified Trainer**
   - 🌊 A **Scuba PADI Open Water Diver**
-  - 🎢 An **Artistic Roller Skating State Champion**
 
 ---
 
