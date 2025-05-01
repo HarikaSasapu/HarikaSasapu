@@ -6,10 +6,6 @@ I'm **Harika Sasapu**, a passionate technologist and Cornell University graduate
 
 ### 🌟 **About Me**
 - 🎓 **Education**: Master's in Engineering Management from **Cornell University** (Class of 2024)
-- 💼 **Professional Highlights**:
-  - Built scalable web architectures as a **Software Engineer** at **FactSet** and **American Express**.
-  - Drove product roadmaps and user-centric designs during internships at **Cognizant**, **Siemens**, and **Pillow**.
-  - Delivered industry projects for global leaders like **Amazon**, **Chubb**, and **MakeMyTrip**.
 - 🔍 **Specialties**:
   - **Analytics, Machine Learning**, and **Customer-Focused Product Solutions**
   - Expertise in **Power BI**, **Tableau**, and **SQL** for data-driven decision-making.
