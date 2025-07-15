@@ -1,0 +1,374 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "$connections": {
+        "defaultValue": {},
+        "type": "Object"
+      }
+    },
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "PowerAppV2",
+        "inputs": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "managerEmail": {
+                "title": "Manager Email",
+                "type": "string",
+                "x-ms-powerApps-param": true
+              }
+            },
+            "required": [
+              "managerEmail"
+            ]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Initialize_ManagerEmail": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "ManagerEmail",
+              "type": "string",
+              "value": "@triggerBody()['managerEmail']"
+            }
+          ]
+        }
+      },
+      "Initialize_DirectReports": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "DirectReports",
+              "type": "array"
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_ManagerEmail": ["Succeeded"]
+        }
+      },
+      "Initialize_AllReports": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "AllReports",
+              "type": "array"
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_DirectReports": ["Succeeded"]
+        }
+      },
+      "Initialize_AccessToken": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "AccessToken",
+              "type": "string"
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_AllReports": ["Succeeded"]
+        }
+      },
+      "Get_Access_Token": {
+        "type": "Http",
+        "inputs": {
+          "method": "POST",
+          "uri": "https://login.microsoftonline.com/@{parameters('tenantId')}/oauth2/v2.0/token",
+          "headers": {
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          "body": "client_id=@{parameters('clientId')}&client_secret=@{parameters('clientSecret')}&scope=https://graph.microsoft.com/.default&grant_type=client_credentials"
+        },
+        "runAfter": {
+          "Initialize_AccessToken": ["Succeeded"]
+        }
+      },
+      "Set_AccessToken": {
+        "type": "SetVariable",
+        "inputs": {
+          "name": "AccessToken",
+          "value": "@body('Get_Access_Token')['access_token']"
+        },
+        "runAfter": {
+          "Get_Access_Token": ["Succeeded"]
+        }
+      },
+      "Get_Manager_Info": {
+        "type": "Http",
+        "inputs": {
+          "method": "GET",
+          "uri": "https://graph.microsoft.com/v1.0/users/@{variables('ManagerEmail')}",
+          "headers": {
+            "Authorization": "Bearer @{variables('AccessToken')}",
+            "Content-Type": "application/json"
+          }
+        },
+        "runAfter": {
+          "Set_AccessToken": ["Succeeded"]
+        }
+      },
+      "Get_Direct_Reports": {
+        "type": "Http",
+        "inputs": {
+          "method": "GET",
+          "uri": "https://graph.microsoft.com/v1.0/users/@{body('Get_Manager_Info')['id']}/directReports",
+          "headers": {
+            "Authorization": "Bearer @{variables('AccessToken')}",
+            "Content-Type": "application/json"
+          }
+        },
+        "runAfter": {
+          "Get_Manager_Info": ["Succeeded"]
+        }
+      },
+      "Process_Direct_Reports": {
+        "type": "Foreach",
+        "foreach": "@body('Get_Direct_Reports')['value']",
+        "actions": {
+          "Append_DirectReport": {
+            "type": "AppendToArrayVariable",
+            "inputs": {
+              "name": "DirectReports",
+              "value": {
+                "id": "@{items('Process_Direct_Reports')['id']}",
+                "displayName": "@{items('Process_Direct_Reports')['displayName']}",
+                "mail": "@{items('Process_Direct_Reports')['mail']}",
+                "jobTitle": "@{items('Process_Direct_Reports')['jobTitle']}",
+                "department": "@{items('Process_Direct_Reports')['department']}",
+                "level": 1,
+                "directManager": "@{body('Get_Manager_Info')['displayName']}",
+                "topLevelManager": "@{body('Get_Manager_Info')['displayName']}",
+                "reportType": "Direct"
+              }
+            }
+          }
+        },
+        "runAfter": {
+          "Get_Direct_Reports": ["Succeeded"]
+        }
+      },
+      "Add_DirectReports_to_AllReports": {
+        "type": "Foreach",
+        "foreach": "@variables('DirectReports')",
+        "actions": {
+          "Append_to_AllReports": {
+            "type": "AppendToArrayVariable",
+            "inputs": {
+              "name": "AllReports",
+              "value": "@items('Add_DirectReports_to_AllReports')"
+            }
+          }
+        },
+        "runAfter": {
+          "Process_Direct_Reports": ["Succeeded"]
+        }
+      },
+      "Get_Indirect_Reports_Level2": {
+        "type": "Foreach",
+        "foreach": "@variables('DirectReports')",
+        "actions": {
+          "Get_Level2_Reports": {
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "https://graph.microsoft.com/v1.0/users/@{items('Get_Indirect_Reports_Level2')['id']}/directReports",
+              "headers": {
+                "Authorization": "Bearer @{variables('AccessToken')}",
+                "Content-Type": "application/json"
+              }
+            }
+          },
+          "Process_Level2_Reports": {
+            "type": "Foreach",
+            "foreach": "@body('Get_Level2_Reports')['value']",
+            "actions": {
+              "Append_Level2_Report": {
+                "type": "AppendToArrayVariable",
+                "inputs": {
+                  "name": "AllReports",
+                  "value": {
+                    "id": "@{items('Process_Level2_Reports')['id']}",
+                    "displayName": "@{items('Process_Level2_Reports')['displayName']}",
+                    "mail": "@{items('Process_Level2_Reports')['mail']}",
+                    "jobTitle": "@{items('Process_Level2_Reports')['jobTitle']}",
+                    "department": "@{items('Process_Level2_Reports')['department']}",
+                    "level": 2,
+                    "directManager": "@{items('Get_Indirect_Reports_Level2')['displayName']}",
+                    "topLevelManager": "@{body('Get_Manager_Info')['displayName']}",
+                    "reportType": "Indirect"
+                  }
+                }
+              }
+            },
+            "runAfter": {
+              "Get_Level2_Reports": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Add_DirectReports_to_AllReports": ["Succeeded"]
+        }
+      },
+      "Get_Indirect_Reports_Level3": {
+        "type": "Foreach",
+        "foreach": "@body('Get_Direct_Reports')['value']",
+        "actions": {
+          "Get_Level2_for_Level3": {
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "https://graph.microsoft.com/v1.0/users/@{items('Get_Indirect_Reports_Level3')['id']}/directReports",
+              "headers": {
+                "Authorization": "Bearer @{variables('AccessToken')}",
+                "Content-Type": "application/json"
+              }
+            }
+          },
+          "Process_Level2_for_Level3": {
+            "type": "Foreach",
+            "foreach": "@body('Get_Level2_for_Level3')['value']",
+            "actions": {
+              "Get_Level3_Reports": {
+                "type": "Http",
+                "inputs": {
+                  "method": "GET",
+                  "uri": "https://graph.microsoft.com/v1.0/users/@{items('Process_Level2_for_Level3')['id']}/directReports",
+                  "headers": {
+                    "Authorization": "Bearer @{variables('AccessToken')}",
+                    "Content-Type": "application/json"
+                  }
+                }
+              },
+              "Process_Level3_Reports": {
+                "type": "Foreach",
+                "foreach": "@body('Get_Level3_Reports')['value']",
+                "actions": {
+                  "Append_Level3_Report": {
+                    "type": "AppendToArrayVariable",
+                    "inputs": {
+                      "name": "AllReports",
+                      "value": {
+                        "id": "@{items('Process_Level3_Reports')['id']}",
+                        "displayName": "@{items('Process_Level3_Reports')['displayName']}",
+                        "mail": "@{items('Process_Level3_Reports')['mail']}",
+                        "jobTitle": "@{items('Process_Level3_Reports')['jobTitle']}",
+                        "department": "@{items('Process_Level3_Reports')['department']}",
+                        "level": 3,
+                        "directManager": "@{items('Process_Level2_for_Level3')['displayName']}",
+                        "topLevelManager": "@{body('Get_Manager_Info')['displayName']}",
+                        "reportType": "Indirect"
+                      }
+                    }
+                  }
+                },
+                "runAfter": {
+                  "Get_Level3_Reports": ["Succeeded"]
+                }
+              }
+            },
+            "runAfter": {
+              "Get_Level2_for_Level3": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Get_Indirect_Reports_Level2": ["Succeeded"]
+        }
+      },
+      "Format_Report_Data": {
+        "type": "Select",
+        "inputs": {
+          "from": "@variables('AllReports')",
+          "select": {
+            "Employee ID": "@item()['id']",
+            "Employee Name": "@item()['displayName']",
+            "Email": "@item()['mail']",
+            "Job Title": "@item()['jobTitle']",
+            "Department": "@item()['department']",
+            "Reporting Level": "@item()['level']",
+            "Report Type": "@item()['reportType']",
+            "Direct Manager": "@item()['directManager']",
+            "Top Level Manager": "@item()['topLevelManager']",
+            "Date Generated": "@utcNow()",
+            "Total Count": "@length(variables('AllReports'))"
+          }
+        },
+        "runAfter": {
+          "Get_Indirect_Reports_Level3": ["Succeeded"]
+        }
+      },
+      "Create_HTML_Table": {
+        "type": "Table",
+        "inputs": {
+          "from": "@body('Format_Report_Data')",
+          "format": "HTML"
+        },
+        "runAfter": {
+          "Format_Report_Data": ["Succeeded"]
+        }
+      },
+      "Send_Email_Report": {
+        "type": "ApiConnection",
+        "inputs": {
+          "host": {
+            "connectionName": "office365",
+            "operationId": "SendEmailV2",
+            "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+          },
+          "parameters": {
+            "emailMessage/To": "@variables('ManagerEmail')",
+            "emailMessage/Subject": "Manager Reports - @{body('Get_Manager_Info')['displayName']} - @{formatDateTime(utcNow(), 'yyyy-MM-dd')}",
+            "emailMessage/Body": "<h2>Direct and Indirect Reports Summary</h2><p><strong>Manager:</strong> @{body('Get_Manager_Info')['displayName']}</p><p><strong>Total Reports:</strong> @{length(variables('AllReports'))}</p><p><strong>Direct Reports:</strong> @{length(variables('DirectReports'))}</p><p><strong>Indirect Reports:</strong> @{sub(length(variables('AllReports')), length(variables('DirectReports')))}</p><p><strong>Report Generated:</strong> @{utcNow()}</p><h3>Detailed Report:</h3>@{body('Create_HTML_Table')}",
+            "emailMessage/Importance": "Normal"
+          }
+        },
+        "runAfter": {
+          "Create_HTML_Table": ["Succeeded"]
+        }
+      },
+      "Respond_to_PowerApp": {
+        "type": "Response",
+        "kind": "PowerApp",
+        "inputs": {
+          "statusCode": 200,
+          "body": {
+            "managerName": "@{body('Get_Manager_Info')['displayName']}",
+            "totalReports": "@{length(variables('AllReports'))}",
+            "directReports": "@{length(variables('DirectReports'))}",
+            "indirectReports": "@{sub(length(variables('AllReports')), length(variables('DirectReports')))}",
+            "reportData": "@body('Format_Report_Data')",
+            "success": true,
+            "message": "Manager reports generated successfully"
+          }
+        },
+        "runAfter": {
+          "Send_Email_Report": ["Succeeded"]
+        }
+      }
+    },
+    "outputs": {}
+  },
+  "connectionReferences": {
+    "office365": {
+      "connectionName": "office365",
+      "source": "NotSpecified",
+      "id": "/providers/Microsoft.PowerApps/apis/shared_office365"
+    }
+  },
+  "flowFailureAlertSubscribed": false
+}
