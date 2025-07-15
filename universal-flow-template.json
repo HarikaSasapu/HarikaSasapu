@@ -1,0 +1,538 @@
+{
+  "schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "$connections": {
+      "defaultValue": {},
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "PowerAppV2",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "managerEmail": {
+              "title": "Manager Email Address",
+              "type": "string",
+              "format": "email",
+              "description": "Enter the email address of the manager",
+              "x-ms-powerApps-param": true
+            },
+            "includeIndirect": {
+              "title": "Include Indirect Reports",
+              "type": "boolean",
+              "description": "Include indirect reports (reports of reports)",
+              "default": true,
+              "x-ms-powerApps-param": true
+            },
+            "maxLevels": {
+              "title": "Maximum Levels",
+              "type": "integer",
+              "description": "Maximum organizational levels to traverse (1-5)",
+              "default": 3,
+              "minimum": 1,
+              "maximum": 5,
+              "x-ms-powerApps-param": true
+            },
+            "outputFormat": {
+              "title": "Output Format",
+              "type": "string",
+              "enum": ["email", "excel"],
+              "description": "How to deliver the report",
+              "default": "email",
+              "x-ms-powerApps-param": true
+            }
+          },
+          "required": ["managerEmail"]
+        }
+      }
+    }
+  },
+  "actions": {
+    "Initialize_Config": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "Config",
+            "type": "object",
+            "value": {
+              "tenantId": "REPLACE_WITH_YOUR_TENANT_ID",
+              "clientId": "REPLACE_WITH_YOUR_CLIENT_ID",
+              "clientSecret": "REPLACE_WITH_YOUR_CLIENT_SECRET",
+              "graphBaseUrl": "https://graph.microsoft.com/v1.0",
+              "authUrl": "https://login.microsoftonline.com"
+            }
+          }
+        ]
+      }
+    },
+    "Initialize_ManagerInfo": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "ManagerInfo",
+            "type": "object",
+            "value": {}
+          }
+        ]
+      },
+      "runAfter": {
+        "Initialize_Config": ["Succeeded"]
+      }
+    },
+    "Initialize_AllReports": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "AllReports",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {
+        "Initialize_ManagerInfo": ["Succeeded"]
+      }
+    },
+    "Initialize_ErrorLog": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "ErrorLog",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {
+        "Initialize_AllReports": ["Succeeded"]
+      }
+    },
+    "Initialize_ProcessingStats": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "ProcessingStats",
+            "type": "object",
+            "value": {
+              "startTime": "@{utcNow()}",
+              "totalProcessed": 0,
+              "directReports": 0,
+              "indirectReports": 0,
+              "errors": 0
+            }
+          }
+        ]
+      },
+      "runAfter": {
+        "Initialize_ErrorLog": ["Succeeded"]
+      }
+    },
+    "Get_Access_Token": {
+      "type": "Http",
+      "inputs": {
+        "method": "POST",
+        "uri": "@{variables('Config')['authUrl']}/@{variables('Config')['tenantId']}/oauth2/v2.0/token",
+        "headers": {
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        "body": "client_id=@{variables('Config')['clientId']}&client_secret=@{variables('Config')['clientSecret']}&scope=https://graph.microsoft.com/.default&grant_type=client_credentials"
+      },
+      "runAfter": {
+        "Initialize_ProcessingStats": ["Succeeded"]
+      }
+    },
+    "Parse_Token_Response": {
+      "type": "ParseJson",
+      "inputs": {
+        "content": "@body('Get_Access_Token')",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "access_token": {"type": "string"},
+            "expires_in": {"type": "integer"},
+            "token_type": {"type": "string"}
+          }
+        }
+      },
+      "runAfter": {
+        "Get_Access_Token": ["Succeeded"]
+      }
+    },
+    "Get_Manager_Info": {
+      "type": "Http",
+      "inputs": {
+        "method": "GET",
+        "uri": "@{variables('Config')['graphBaseUrl']}/users/@{triggerBody()['managerEmail']}?$select=id,displayName,mail,jobTitle,department,companyName,officeLocation",
+        "headers": {
+          "Authorization": "Bearer @{body('Parse_Token_Response')['access_token']}",
+          "Content-Type": "application/json"
+        }
+      },
+      "runAfter": {
+        "Parse_Token_Response": ["Succeeded"]
+      }
+    },
+    "Set_Manager_Info": {
+      "type": "SetVariable",
+      "inputs": {
+        "name": "ManagerInfo",
+        "value": "@body('Get_Manager_Info')"
+      },
+      "runAfter": {
+        "Get_Manager_Info": ["Succeeded"]
+      }
+    },
+    "Get_Direct_Reports": {
+      "type": "Http",
+      "inputs": {
+        "method": "GET",
+        "uri": "@{variables('Config')['graphBaseUrl']}/users/@{variables('ManagerInfo')['id']}/directReports?$select=id,displayName,mail,jobTitle,department,companyName,officeLocation",
+        "headers": {
+          "Authorization": "Bearer @{body('Parse_Token_Response')['access_token']}",
+          "Content-Type": "application/json"
+        }
+      },
+      "runAfter": {
+        "Set_Manager_Info": ["Succeeded"]
+      }
+    },
+    "Process_Direct_Reports": {
+      "type": "Foreach",
+      "foreach": "@body('Get_Direct_Reports')['value']",
+      "actions": {
+        "Add_Direct_Report": {
+          "type": "AppendToArrayVariable",
+          "inputs": {
+            "name": "AllReports",
+            "value": {
+              "id": "@{items('Process_Direct_Reports')['id']}",
+              "displayName": "@{items('Process_Direct_Reports')['displayName']}",
+              "mail": "@{items('Process_Direct_Reports')['mail']}",
+              "jobTitle": "@{items('Process_Direct_Reports')['jobTitle']}",
+              "department": "@{items('Process_Direct_Reports')['department']}",
+              "companyName": "@{items('Process_Direct_Reports')['companyName']}",
+              "officeLocation": "@{items('Process_Direct_Reports')['officeLocation']}",
+              "level": 1,
+              "reportType": "Direct",
+              "directManager": "@{variables('ManagerInfo')['displayName']}",
+              "topLevelManager": "@{variables('ManagerInfo')['displayName']}",
+              "retrievedDate": "@utcNow()"
+            }
+          }
+        }
+      },
+      "runAfter": {
+        "Get_Direct_Reports": ["Succeeded"]
+      }
+    },
+    "Condition_Include_Indirect": {
+      "type": "If",
+      "expression": {
+        "and": [
+          {
+            "equals": [
+              "@triggerBody()['includeIndirect']",
+              true
+            ]
+          },
+          {
+            "greater": [
+              "@triggerBody()['maxLevels']",
+              1
+            ]
+          }
+        ]
+      },
+      "actions": {
+        "Get_Level_2_Reports": {
+          "type": "Foreach",
+          "foreach": "@body('Get_Direct_Reports')['value']",
+          "actions": {
+            "Get_Level2_Direct_Reports": {
+              "type": "Http",
+              "inputs": {
+                "method": "GET",
+                "uri": "@{variables('Config')['graphBaseUrl']}/users/@{items('Get_Level_2_Reports')['id']}/directReports?$select=id,displayName,mail,jobTitle,department,companyName,officeLocation",
+                "headers": {
+                  "Authorization": "Bearer @{body('Parse_Token_Response')['access_token']}",
+                  "Content-Type": "application/json"
+                }
+              }
+            },
+            "Process_Level2_Reports": {
+              "type": "Foreach",
+              "foreach": "@body('Get_Level2_Direct_Reports')['value']",
+              "actions": {
+                "Add_Level2_Report": {
+                  "type": "AppendToArrayVariable",
+                  "inputs": {
+                    "name": "AllReports",
+                    "value": {
+                      "id": "@{items('Process_Level2_Reports')['id']}",
+                      "displayName": "@{items('Process_Level2_Reports')['displayName']}",
+                      "mail": "@{items('Process_Level2_Reports')['mail']}",
+                      "jobTitle": "@{items('Process_Level2_Reports')['jobTitle']}",
+                      "department": "@{items('Process_Level2_Reports')['department']}",
+                      "companyName": "@{items('Process_Level2_Reports')['companyName']}",
+                      "officeLocation": "@{items('Process_Level2_Reports')['officeLocation']}",
+                      "level": 2,
+                      "reportType": "Indirect",
+                      "directManager": "@{items('Get_Level_2_Reports')['displayName']}",
+                      "topLevelManager": "@{variables('ManagerInfo')['displayName']}",
+                      "retrievedDate": "@utcNow()"
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Get_Level2_Direct_Reports": ["Succeeded"]
+              }
+            },
+            "Condition_Level3": {
+              "type": "If",
+              "expression": {
+                "greater": [
+                  "@triggerBody()['maxLevels']",
+                  2
+                ]
+              },
+              "actions": {
+                "Get_Level3_Reports": {
+                  "type": "Foreach",
+                  "foreach": "@body('Get_Level2_Direct_Reports')['value']",
+                  "actions": {
+                    "Get_Level3_Direct_Reports": {
+                      "type": "Http",
+                      "inputs": {
+                        "method": "GET",
+                        "uri": "@{variables('Config')['graphBaseUrl']}/users/@{items('Get_Level3_Reports')['id']}/directReports?$select=id,displayName,mail,jobTitle,department,companyName,officeLocation",
+                        "headers": {
+                          "Authorization": "Bearer @{body('Parse_Token_Response')['access_token']}",
+                          "Content-Type": "application/json"
+                        }
+                      }
+                    },
+                    "Process_Level3_Reports": {
+                      "type": "Foreach",
+                      "foreach": "@body('Get_Level3_Direct_Reports')['value']",
+                      "actions": {
+                        "Add_Level3_Report": {
+                          "type": "AppendToArrayVariable",
+                          "inputs": {
+                            "name": "AllReports",
+                            "value": {
+                              "id": "@{items('Process_Level3_Reports')['id']}",
+                              "displayName": "@{items('Process_Level3_Reports')['displayName']}",
+                              "mail": "@{items('Process_Level3_Reports')['mail']}",
+                              "jobTitle": "@{items('Process_Level3_Reports')['jobTitle']}",
+                              "department": "@{items('Process_Level3_Reports')['department']}",
+                              "companyName": "@{items('Process_Level3_Reports')['companyName']}",
+                              "officeLocation": "@{items('Process_Level3_Reports')['officeLocation']}",
+                              "level": 3,
+                              "reportType": "Indirect",
+                              "directManager": "@{items('Get_Level3_Reports')['displayName']}",
+                              "topLevelManager": "@{variables('ManagerInfo')['displayName']}",
+                              "retrievedDate": "@utcNow()"
+                            }
+                          }
+                        }
+                      },
+                      "runAfter": {
+                        "Get_Level3_Direct_Reports": ["Succeeded"]
+                      }
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Process_Level2_Reports": ["Succeeded"]
+              }
+            }
+          }
+        }
+      },
+      "runAfter": {
+        "Process_Direct_Reports": ["Succeeded"]
+      }
+    },
+    "Calculate_Statistics": {
+      "type": "Compose",
+      "inputs": {
+        "totalReports": "@length(variables('AllReports'))",
+        "directReports": "@length(filter(variables('AllReports'), item()['level'] == 1))",
+        "indirectReports": "@length(filter(variables('AllReports'), item()['level'] > 1))",
+        "departments": "@createArray(unique(map(variables('AllReports'), item()['department'])))",
+        "locations": "@createArray(unique(map(variables('AllReports'), item()['officeLocation'])))",
+        "endTime": "@utcNow()",
+        "processingTimeSeconds": "@div(sub(ticks(utcNow()), ticks(variables('ProcessingStats')['startTime'])), 10000000)"
+      },
+      "runAfter": {
+        "Condition_Include_Indirect": ["Succeeded"]
+      }
+    },
+    "Format_Report_Data": {
+      "type": "Select",
+      "inputs": {
+        "from": "@variables('AllReports')",
+        "select": {
+          "Employee ID": "@item()['id']",
+          "Employee Name": "@item()['displayName']",
+          "Email Address": "@item()['mail']",
+          "Job Title": "@item()['jobTitle']",
+          "Department": "@item()['department']",
+          "Company": "@item()['companyName']",
+          "Office Location": "@item()['officeLocation']",
+          "Reporting Level": "@item()['level']",
+          "Report Type": "@item()['reportType']",
+          "Direct Manager": "@item()['directManager']",
+          "Top Level Manager": "@item()['topLevelManager']",
+          "Date Retrieved": "@formatDateTime(item()['retrievedDate'], 'yyyy-MM-dd HH:mm:ss')"
+        }
+      },
+      "runAfter": {
+        "Calculate_Statistics": ["Succeeded"]
+      }
+    },
+    "Create_HTML_Table": {
+      "type": "Table",
+      "inputs": {
+        "from": "@body('Format_Report_Data')",
+        "format": "HTML"
+      },
+      "runAfter": {
+        "Format_Report_Data": ["Succeeded"]
+      }
+    },
+    "Create_Email_Body": {
+      "type": "Compose",
+      "inputs": "<!DOCTYPE html>\n<html>\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Manager Reports Dashboard</title>\n    <style>\n        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }\n        .container { max-width: 900px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }\n        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 25px; border-radius: 8px; margin-bottom: 25px; text-align: center; }\n        .header h1 { margin: 0; font-size: 28px; font-weight: 300; }\n        .header p { margin: 8px 0 0 0; opacity: 0.9; font-size: 16px; }\n        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin: 25px 0; }\n        .stat-card { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 20px; border-radius: 10px; border-left: 5px solid #667eea; text-align: center; }\n        .stat-number { font-size: 32px; font-weight: bold; color: #667eea; margin-bottom: 5px; }\n        .stat-label { font-size: 14px; color: #666; font-weight: 500; }\n        .section { margin: 30px 0; }\n        .section h3 { color: #333; border-bottom: 3px solid #667eea; padding-bottom: 10px; font-size: 20px; margin-bottom: 20px; }\n        .info-table { width: 100%; border-collapse: collapse; margin: 20px 0; }\n        .info-table td { padding: 12px; border-bottom: 1px solid #eee; }\n        .info-table td:first-child { font-weight: bold; color: #555; width: 150px; }\n        .data-table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 13px; }\n        .data-table th { background-color: #667eea; color: white; padding: 12px 8px; text-align: left; font-weight: 600; }\n        .data-table td { padding: 10px 8px; border-bottom: 1px solid #ddd; }\n        .data-table tr:nth-child(even) { background-color: #f9f9f9; }\n        .data-table tr:hover { background-color: #f1f3f4; }\n        .highlight { background: linear-gradient(135deg, #fff3cd 0%, #ffeaa7 100%); padding: 15px; border-radius: 8px; border-left: 5px solid #ffc107; margin: 20px 0; }\n        .highlight strong { color: #856404; }\n        .footer { margin-top: 40px; padding-top: 20px; border-top: 2px solid #eee; font-size: 12px; color: #666; text-align: center; }\n        .badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: bold; }\n        .badge-direct { background-color: #d4edda; color: #155724; }\n        .badge-indirect { background-color: #d1ecf1; color: #0c5460; }\n    </style>\n</head>\n<body>\n    <div class=\"container\">\n        <div class=\"header\">\n            <h1>📊 Manager Reports Dashboard</h1>\n            <p>Organizational Hierarchy Report for @{variables('ManagerInfo')['displayName']}</p>\n            <p>Generated on @{formatDateTime(utcNow(), 'dddd, MMMM dd, yyyy \\a\\t HH:mm')} UTC</p>\n        </div>\n        \n        <div class=\"stats-grid\">\n            <div class=\"stat-card\">\n                <div class=\"stat-number\">@{outputs('Calculate_Statistics')['totalReports']}</div>\n                <div class=\"stat-label\">Total Reports</div>\n            </div>\n            <div class=\"stat-card\">\n                <div class=\"stat-number\">@{outputs('Calculate_Statistics')['directReports']}</div>\n                <div class=\"stat-label\">Direct Reports</div>\n            </div>\n            <div class=\"stat-card\">\n                <div class=\"stat-number\">@{outputs('Calculate_Statistics')['indirectReports']}</div>\n                <div class=\"stat-label\">Indirect Reports</div>\n            </div>\n            <div class=\"stat-card\">\n                <div class=\"stat-number\">@{length(outputs('Calculate_Statistics')['departments'])}</div>\n                <div class=\"stat-label\">Departments</div>\n            </div>\n        </div>\n        \n        <div class=\"section\">\n            <h3>👤 Manager Information</h3>\n            <table class=\"info-table\">\n                <tr><td>Name:</td><td>@{variables('ManagerInfo')['displayName']}</td></tr>\n                <tr><td>Email:</td><td>@{variables('ManagerInfo')['mail']}</td></tr>\n                <tr><td>Job Title:</td><td>@{coalesce(variables('ManagerInfo')['jobTitle'], 'Not specified')}</td></tr>\n                <tr><td>Department:</td><td>@{coalesce(variables('ManagerInfo')['department'], 'Not specified')}</td></tr>\n                <tr><td>Company:</td><td>@{coalesce(variables('ManagerInfo')['companyName'], 'Not specified')}</td></tr>\n                <tr><td>Office:</td><td>@{coalesce(variables('ManagerInfo')['officeLocation'], 'Not specified')}</td></tr>\n            </table>\n        </div>\n        \n        <div class=\"section\">\n            <h3>👥 Team Reports (@{outputs('Calculate_Statistics')['totalReports']} Total)</h3>\n            @{body('Create_HTML_Table')}\n        </div>\n        \n        <div class=\"highlight\">\n            <strong>💡 Report Information:</strong>\n            <ul>\n                <li>Report includes up to @{triggerBody()['maxLevels']} organizational levels</li>\n                <li>Data retrieved from Azure Active Directory in real-time</li>\n                <li>Processing completed in @{outputs('Calculate_Statistics')['processingTimeSeconds']} seconds</li>\n                <li>Departments covered: @{join(outputs('Calculate_Statistics')['departments'], ', ')}</li>\n            </ul>\n        </div>\n        \n        <div class=\"footer\">\n            <p><strong>Generated by:</strong> Universal Manager Reports Flow | <strong>Report ID:</strong> @{workflow()['run']['name']}</p>\n            <p><strong>Data Source:</strong> Microsoft Graph API | <strong>Version:</strong> 2.0</p>\n            <p>This is an automated report. For technical support, contact your IT department.</p>\n        </div>\n    </div>\n</body>\n</html>",
+      "runAfter": {
+        "Create_HTML_Table": ["Succeeded"]
+      }
+    },
+    "Output_Switch": {
+      "type": "Switch",
+      "expression": "@triggerBody()['outputFormat']",
+      "cases": {
+        "Email": {
+          "case": "email",
+          "actions": {
+            "Send_Email_Report": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connectionName": "office365",
+                  "operationId": "SendEmailV2",
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+                },
+                "parameters": {
+                  "emailMessage/To": "@triggerBody()['managerEmail']",
+                  "emailMessage/Subject": "📊 Manager Reports - @{variables('ManagerInfo')['displayName']} - @{formatDateTime(utcNow(), 'yyyy-MM-dd')}",
+                  "emailMessage/Body": "@{outputs('Create_Email_Body')}",
+                  "emailMessage/Importance": "Normal"
+                }
+              }
+            }
+          }
+        },
+        "Excel": {
+          "case": "excel",
+          "actions": {
+            "Create_CSV_Content": {
+              "type": "Compose",
+              "inputs": "@{join(createArray('Employee ID,Employee Name,Email Address,Job Title,Department,Company,Office Location,Reporting Level,Report Type,Direct Manager,Top Level Manager,Date Retrieved'), '\n')}\n@{join(map(body('Format_Report_Data'), concat(item()['Employee ID'], ',', item()['Employee Name'], ',', item()['Email Address'], ',', item()['Job Title'], ',', item()['Department'], ',', item()['Company'], ',', item()['Office Location'], ',', item()['Reporting Level'], ',', item()['Report Type'], ',', item()['Direct Manager'], ',', item()['Top Level Manager'], ',', item()['Date Retrieved'])), '\n')}"
+            },
+            "Send_Excel_Email": {
+              "type": "ApiConnection",
+              "inputs": {
+                "host": {
+                  "connectionName": "office365",
+                  "operationId": "SendEmailV2",
+                  "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+                },
+                "parameters": {
+                  "emailMessage/To": "@triggerBody()['managerEmail']",
+                  "emailMessage/Subject": "📊 Manager Reports (Excel) - @{variables('ManagerInfo')['displayName']} - @{formatDateTime(utcNow(), 'yyyy-MM-dd')}",
+                  "emailMessage/Body": "<h2>Manager Reports - Excel Format</h2><p>Please find attached your team reports in CSV format.</p><p><strong>Summary:</strong></p><ul><li>Total Reports: @{outputs('Calculate_Statistics')['totalReports']}</li><li>Direct Reports: @{outputs('Calculate_Statistics')['directReports']}</li><li>Indirect Reports: @{outputs('Calculate_Statistics')['indirectReports']}</li></ul>",
+                  "emailMessage/Attachments": [
+                    {
+                      "Name": "Manager_Reports_@{formatDateTime(utcNow(), 'yyyyMMdd_HHmmss')}.csv",
+                      "ContentBytes": "@{base64(outputs('Create_CSV_Content'))}"
+                    }
+                  ]
+                }
+              },
+              "runAfter": {
+                "Create_CSV_Content": ["Succeeded"]
+              }
+            }
+          }
+        }
+      },
+      "default": {
+        "actions": {
+          "Default_Email_Output": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": {
+                "connectionName": "office365",
+                "operationId": "SendEmailV2",
+                "apiId": "/providers/Microsoft.PowerApps/apis/shared_office365"
+              },
+              "parameters": {
+                "emailMessage/To": "@triggerBody()['managerEmail']",
+                "emailMessage/Subject": "Manager Reports - @{variables('ManagerInfo')['displayName']}",
+                "emailMessage/Body": "Your manager reports have been generated successfully. Total reports found: @{outputs('Calculate_Statistics')['totalReports']}"
+              }
+            }
+          }
+        }
+      },
+      "runAfter": {
+        "Create_Email_Body": ["Succeeded"]
+      }
+    },
+    "Final_Response": {
+      "type": "Response",
+      "inputs": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "success": true,
+          "message": "Manager reports generated successfully",
+          "data": {
+            "managerName": "@{variables('ManagerInfo')['displayName']}",
+            "managerEmail": "@{variables('ManagerInfo')['mail']}",
+            "totalReports": "@{outputs('Calculate_Statistics')['totalReports']}",
+            "directReports": "@{outputs('Calculate_Statistics')['directReports']}",
+            "indirectReports": "@{outputs('Calculate_Statistics')['indirectReports']}",
+            "processingTimeSeconds": "@{outputs('Calculate_Statistics')['processingTimeSeconds']}",
+            "reportId": "@{workflow()['run']['name']}",
+            "generatedAt": "@utcNow()"
+          }
+        }
+      },
+      "runAfter": {
+        "Output_Switch": ["Succeeded"]
+      }
+    }
+  },
+  "outputs": {},
+  "metadata": {
+    "flowDisplayName": "Universal Manager Reports",
+    "flowDescription": "Get direct and indirect manager reports from any Microsoft 365 organization",
+    "flowVersion": "2.0"
+  }
+}
